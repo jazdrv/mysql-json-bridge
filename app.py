@@ -1,5 +1,6 @@
 #!/usr/bin/env python
-#
+
+#{{{
 # Copyright 2012 Major Hayden
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -13,6 +14,7 @@
 # WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 # License for the specific language governing permissions and limitations
 # under the License.
+#}}}
 
 """MySQL <-> JSON bridge"""
 
@@ -23,18 +25,16 @@ import logging
 import os
 from urlparse import urlparse
 import yaml
-
-
 from tornado.database import Connection
 from flask import Flask, Response, abort, request
-
+#more libs
+import urllib2
 
 app = Flask(__name__)
 app.debug = True
 
-
-# Helps us find non-python files installed by setuptools
 def data_file(fname):
+    """Helps us find non-python files installed by setuptools"""
     """Return the path to a data file of ours."""
     return os.path.join(os.path.split(__file__)[0], fname)
 
@@ -60,15 +60,12 @@ if not app.debug:
     except:
         pass
 
-
-# Decorator to return JSON easily
 def jsonify(f):
+    """Decorator to return JSON easily"""
     def inner(*args, **kwargs):
         jsonstring = json.dumps(f(*args, **kwargs), default=json_fixup)
         return Response(jsonstring, mimetype='application/json')
     return inner
-
-
 def json_fixup(obj):
     if isinstance(obj, datetime.datetime):
         return obj.isoformat()
@@ -76,16 +73,13 @@ def json_fixup(obj):
         return float(obj)
     else:
         return None
-
-
 def read_config():
     with open(data_file('config/databases.yml'), 'r') as f:
         databases = yaml.load(f)
     return databases
-
-
-# Pull the database credentials from our YAML file
 def get_db_creds(database):
+    """Pull the database credentials from our YAML file"""
+
     databases = read_config()
     mysql_uri = databases.get(database)
 
@@ -107,16 +101,15 @@ def get_db_creds(database):
 
     return creds
 
-
-# Handles the listing of available databases
+# Handles the listing of available databases{{{
 @app.route("/list", methods=['GET'])
 def return_database_list():
     databases = read_config()
     data = {'databases': databases.keys()}
     return Response(json.dumps(data), mimetype='application/json')
 
-
-# This is what receives our SQL queries
+#}}}
+# This is what receives our SQL queries{{{
 @app.route("/query/<database>", methods=['POST'])
 @jsonify
 def do_query(database=None):
@@ -157,6 +150,54 @@ def do_query(database=None):
 
     return {'result': results}
 
+#}}}
+# Alt query method{{{
+@app.route("/query1/<database>/<sql>", methods=['GET'])
+@jsonify
+def do_query1(database=None,sql=None):
+    #check to see if i get sql
+    app.logger.info("sql: %s" % sql)
+    # Pick up the database credentials
+    app.logger.warning("%s requesting access to %s database" % (
+        request.remote_addr, database))
+    creds = get_db_creds(database)
+
+    # If we couldn't find corresponding credentials, throw a 404
+    if creds == False:
+        return {"ERROR": "Unable to find credentials matching %s." % database}
+        abort(404)
+
+    # Prepare the database connection
+    app.logger.debug("Connecting to %s database (%s)" % (
+        database, request.remote_addr))
+    db = Connection(**creds)
+
+    # See if we received a query
+    #sql = request.form.get('sql')
+    #if not sql:
+    #    return {"ERROR": "SQL query missing from request."}
+
+    sql = urllib2.unquote(urllib2.quote(sql.encode("utf8")))
+
+    # If the query has a percent sign, we need to excape it
+    if '%' in sql:
+        sql = sql.replace('%', '%%')
+
+    # Attempt to run the query
+    try:
+        app.logger.info("%s attempting to run \" %s \" against %s database" % (
+            request.remote_addr, sql, database))
+        results = db.query(sql)
+    except Exception, e:
+        return {"ERROR": ": ".join(str(i) for i in e.args)}
+
+    # Disconnect from the DB
+    db.close()
+
+    return {'result': results}
+
+#}}}
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0')
+
