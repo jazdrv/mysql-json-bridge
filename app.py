@@ -28,7 +28,7 @@ import yaml
 from tornado.database import Connection
 from flask import Flask, Response, abort, request
 #more libs
-import urllib2
+import urllib
 
 app = Flask(__name__)
 app.debug = True
@@ -155,8 +155,10 @@ def do_query(database=None):
 @app.route("/query1/<database>/<sql>", methods=['GET'])
 @jsonify
 def do_query1(database=None,sql=None):
+    #decode sql first
+    sql = sql.replace('+',' ')
     #check to see if i get sql
-    app.logger.info("sql: %s" % sql)
+    app.logger.info("aft.sql: %s" % sql)
     # Pick up the database credentials
     app.logger.warning("%s requesting access to %s database" % (
         request.remote_addr, database))
@@ -177,7 +179,6 @@ def do_query1(database=None,sql=None):
     #if not sql:
     #    return {"ERROR": "SQL query missing from request."}
 
-    sql = urllib2.unquote(urllib2.quote(sql.encode("utf8")))
 
     # If the query has a percent sign, we need to excape it
     if '%' in sql:
