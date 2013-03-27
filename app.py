@@ -18,17 +18,16 @@
 
 """MySQL <-> JSON bridge"""
 
-import datetime
-import decimal
-import json
-import logging
-import os
+#libs {{{
+
+import MySQLdb as dbapi
+import datetime,decimal,json,logging,os,csv,yaml,urllib,sys
 from urlparse import urlparse
-import yaml
 from tornado.database import Connection
 from flask import Flask, Response, abort, request
-#more libs
-import urllib
+from cStringIO import StringIO
+
+#libs }}}
 
 app = Flask(__name__)
 app.debug = True
@@ -37,6 +36,7 @@ def data_file(fname):
     """Helps us find non-python files installed by setuptools"""
     """Return the path to a data file of ours."""
     return os.path.join(os.path.split(__file__)[0], fname)
+#yaml + logger  {{{
 
 if not app.debug:
     logyaml = ""
@@ -60,12 +60,39 @@ if not app.debug:
     except:
         pass
 
+#yaml + logger }}}
+
 def jsonify(f):
     """Decorator to return JSON easily"""
     def inner(*args, **kwargs):
         jsonstring = json.dumps(f(*args, **kwargs), default=json_fixup)
         return Response(jsonstring, mimetype='application/json')
     return inner
+    
+def processMethod(f):
+    """Decorator to return JSON or CSV easily"""
+    def inner(*args, **kwargs):
+        data = f(*args,**kwargs)
+        method = data[0];
+        results = data[1];
+        if method=='csv':
+            desc = data[2];
+            old_stdout = sys.stdout
+            sys.stdout = stdout = StringIO()
+            #writer = csv.writer(sys.stdout,dialect='excel')
+            writer = csv.writer(sys.stdout,quoting=csv.QUOTE_NONNUMERIC)
+            writer.writerow([i[0] for i in desc])
+            for item in results:
+                writer.writerow(item)
+            sys.stdout = old_stdout
+            response = stdout.getvalue()
+            print response
+            return Response(response, mimetype='text/csv')
+        if method=='json':
+            jsonstring = json.dumps(results, default=json_fixup)
+            return Response(jsonstring, mimetype='application/json')
+    return inner
+    
 def json_fixup(obj):
     if isinstance(obj, datetime.datetime):
         return obj.isoformat()
@@ -109,9 +136,11 @@ def return_database_list():
     return Response(json.dumps(data), mimetype='application/json')
 
 #}}}
-# This is what receives our SQL queries{{{
+# This is what receives our SQL queries (json){{{
+
 @app.route("/query/<database>", methods=['POST'])
 @jsonify
+
 def do_query(database=None):
     # Pick up the database credentials
     app.logger.warning("%s requesting access to %s database" % (
@@ -151,51 +180,58 @@ def do_query(database=None):
     return {'result': results}
 
 #}}}
-# Alt query method{{{
-@app.route("/query1/<database>/<sql>", methods=['GET'])
-@jsonify
-def do_query1(database=None,sql=None):
-    #decode sql first
+
+# Alt query method (csv/json){{{
+
+#@app.route("/query1/<database>/<sql>/<csv>", methods=['GET'])
+@app.route("/<method>/<database>/<sql>", methods=['GET'])
+@processMethod
+def do_query1(method=None,database=None,sql=None):
+
+    desc = None
     sql = sql.replace('+',' ')
-    #check to see if i get sql
     app.logger.info("aft.sql: %s" % sql)
-    # Pick up the database credentials
     app.logger.warning("%s requesting access to %s database" % (
         request.remote_addr, database))
     creds = get_db_creds(database)
-
-    # If we couldn't find corresponding credentials, throw a 404
     if creds == False:
         return {"ERROR": "Unable to find credentials matching %s." % database}
         abort(404)
-
-    # Prepare the database connection
     app.logger.debug("Connecting to %s database (%s)" % (
         database, request.remote_addr))
-    db = Connection(**creds)
-
-    # See if we received a query
-    #sql = request.form.get('sql')
-    #if not sql:
-    #    return {"ERROR": "SQL query missing from request."}
-
-
-    # If the query has a percent sign, we need to excape it
     if '%' in sql:
         sql = sql.replace('%', '%%')
 
-    # Attempt to run the query
-    try:
-        app.logger.info("%s attempting to run \" %s \" against %s database" % (
-            request.remote_addr, sql, database))
-        results = db.query(sql)
-    except Exception, e:
-        return {"ERROR": ": ".join(str(i) for i in e.args)}
+    if method=='json':
+        try:
+            app.logger.info("%s attempting to run \" %s \" against %s database" % (
+                request.remote_addr, sql, database))
+            db = Connection(**creds)
+            results = db.query(sql)
+            db.close()
+        except Exception, e:
+            results = {"ERROR": ": ".join(str(i) for i in e.args)}
+        results = {'result': results}
 
-    # Disconnect from the DB
-    db.close()
+    elif method=='csv':
+        try:
+            app.logger.info("%s attempting to run \" %s \" against %s database" % (
+                request.remote_addr, sql, database))
+            dbServer = creds['host']
+            dbPass = creds['password']
+            dbUser = creds['user']
+            dbDB = creds['database']
+            db = dbapi.connect(host=dbServer,user=dbUser,passwd=dbPass,db=dbDB)
+            cur = db.cursor()
+            cur.execute(sql)
+            results = cur.fetchall()
+            desc = cur.description
+        except Exception, e:
+            results = "ERROR: "+join(str(i) for i in e.args)
+    else:
+        sys.exit()
 
-    return {'result': results}
+    return [method,results,desc]
 
 #}}}
 
